@@ -42,6 +42,8 @@ type report struct {
 	mismatched       int
 	outOfOrder       int
 	lost             int
+	accountsInDB     int
+	projectionWrong  int
 }
 
 func main() {
@@ -83,6 +85,11 @@ func main() {
 
 	countLost(entries, progress, &r)
 
+	err = checkProjection(ctx, pool, &r)
+	if err != nil {
+		log.Fatalf("check projection: %v", err)
+	}
+
 	printReport(r)
 	if r.hasViolations() {
 		os.Exit(1)
@@ -99,7 +106,7 @@ func countLost(entries map[entryKey]entry, progress map[int64]*accountProgress, 
 }
 
 func (r report) hasViolations() bool {
-	return r.lost > 0 || r.phantoms > 0 || r.mismatched > 0 || r.outOfOrder > 0
+	return r.lost > 0 || r.phantoms > 0 || r.mismatched > 0 || r.outOfOrder > 0 || r.projectionWrong > 0
 }
 
 func loadEntries(ctx context.Context, pool *pgxpool.Pool) (map[entryKey]entry, error) {
@@ -239,4 +246,6 @@ func printReport(r report) {
 	fmt.Printf("content mismatches      : %d\n", r.mismatched)
 	fmt.Printf("out of order            : %d\n", r.outOfOrder)
 	fmt.Printf("lost                    : %d\n", r.lost)
+	fmt.Printf("accounts in DB          : %d\n", r.accountsInDB)
+	fmt.Printf("projection wrong        : %d\n", r.projectionWrong)
 }

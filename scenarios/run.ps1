@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("baseline", "relay-kill", "kafka-kill", "kafka-pause", "postgres-kill")]
+    [ValidateSet("baseline", "relay-kill", "consumer-kill", "kafka-kill", "kafka-pause", "postgres-kill")]
     [string]$Scenario = "baseline",
     [int]$Seconds = 60,
     [int]$FaultAt = 15,
@@ -21,7 +21,27 @@ function Reset-Stack {
 function Start-Relay {
     $env:DATABASE_URL = "$baseUrl&application_name=relay"
     $logName = "$raw\relay-$(Get-Date -Format HHmmssfff).log"
-    return Start-Process bin\relay-poll.exe -PassThru -NoNewWindow -RedirectStandardError $logName
+    $process = Start-Process bin\relay-poll.exe -PassThru -NoNewWindow -RedirectStandardError $logName
+    $env:DATABASE_URL = $baseUrl
+    return $process
+}
+
+function Start-Projector {
+    $env:REPORT_EVERY = "10s"
+    if ($Scenario -eq "consumer-kill") {
+        $env:REPORT_EVERY = "1s"
+    }
+    $logName = "$raw\projector-$(Get-Date -Format HHmmssfff).log"
+    return Start-Process bin\projector.exe -PassThru -NoNewWindow -RedirectStandardError $logName
+}
+
+function Get-ProjectionLag {
+    $entries = docker compose exec -T postgres psql -U tidemark -d tidemark -tA -c "SELECT count(*) FROM account_entries" 2>$null
+    $applied = docker compose exec -T postgres psql -U tidemark -d projections -tA -c "SELECT COALESCE(sum(version), 0) FROM account_balances" 2>$null
+    if (-not $entries -or -not $applied) {
+        return -1
+    }
+    return [long]$entries.Trim() - [long]$applied.Trim()
 }
 
 function Get-Sample {
@@ -65,9 +85,10 @@ if (-not (Test-Preflight)) {
 $env:DATABASE_URL = $baseUrl
 $service = Start-Process bin\service.exe -PassThru -NoNewWindow -RedirectStandardError "$raw\service.log"
 $relay = Start-Relay
+$projector = Start-Projector
 Start-Sleep -Seconds 1
-if ($service.HasExited -or $relay.HasExited) {
-    Write-Output "service or relay failed to start; see $raw"
+if ($service.HasExited -or $relay.HasExited -or $projector.HasExited) {
+    Write-Output "service, relay or projector failed to start; see $raw"
     exit 2
 }
 
@@ -82,6 +103,8 @@ $samples.Add("second,backlog,relay_tx_age_s,accounts_dead,outbox_dead,note")
 $started = Get-Date
 $nextKill = 3
 $relayKills = 0
+$projectorKills = 0
+$projectorCrashes = 0
 $faultActive = $false
 $vacuumChecked = $false
 
@@ -96,6 +119,21 @@ while (-not $loadgen.HasExited) {
         $relay = Start-Relay
         $nextKill = $elapsed + (Get-Random -Minimum 2 -Maximum 6)
         $note = "relay killed"
+    }
+
+    if ($Scenario -eq "consumer-kill" -and $elapsed -ge $nextKill) {
+        Stop-Process -Id $projector.Id -Force
+        $projectorKills++
+        Start-Sleep -Milliseconds 300
+        $projector = Start-Projector
+        $nextKill = $elapsed + (Get-Random -Minimum 2 -Maximum 6)
+        $note = "projector killed"
+    }
+
+    if ($projector.HasExited) {
+        $projectorCrashes++
+        $projector = Start-Projector
+        $note = "PROJECTOR EXITED ON ITS OWN"
     }
 
     if ($Scenario -in @("kafka-kill", "kafka-pause", "postgres-kill")) {
@@ -136,8 +174,21 @@ while ($backlog -ne 0 -and ((Get-Date) - $drainStarted).TotalSeconds -lt 180) {
 }
 $drainSeconds = [math]::Round(((Get-Date) - $drainStarted).TotalSeconds, 1)
 
+$catchUpStarted = Get-Date
+$projectionLag = Get-ProjectionLag
+while ($projectionLag -ne 0 -and ((Get-Date) - $catchUpStarted).TotalSeconds -lt 180) {
+    if ($projector.HasExited) {
+        $projectorCrashes++
+        $projector = Start-Projector
+    }
+    Start-Sleep -Seconds 1
+    $projectionLag = Get-ProjectionLag
+}
+$catchUpSeconds = [math]::Round(((Get-Date) - $catchUpStarted).TotalSeconds, 1)
+
 Stop-Process -Id $relay.Id -Force
 Stop-Process -Id $service.Id -Force
+Stop-Process -Id $projector.Id -Force -ErrorAction SilentlyContinue
 $samples | Out-File -Encoding utf8 "$raw\samples.csv"
 
 Write-Output "--- load"
@@ -147,6 +198,19 @@ Get-Content "$raw\rogue.txt"
 Write-Output "--- relay"
 Write-Output "relay kills      : $relayKills"
 Write-Output "drain after load : $drainSeconds s (backlog at end: $backlog)"
+Write-Output "--- projector"
+Write-Output "projector kills   : $projectorKills"
+Write-Output "projector crashes : $projectorCrashes"
+Write-Output "catch-up after drain: $catchUpSeconds s (lag at end: $projectionLag)"
+$skippedTotal = 0
+foreach ($projectorLog in Get-ChildItem "$raw\projector-*.log") {
+    $lastReport = Get-Content $projectorLog.FullName | Select-String "duplicates_skipped=(\d+)" | Select-Object -Last 1
+    if ($lastReport) {
+        $skippedTotal += [int]$lastReport.Matches[0].Groups[1].Value
+    }
+}
+Write-Output "duplicates skipped by projector (lower bound): $skippedTotal"
+Get-ChildItem "$raw\projector-*.log" | ForEach-Object { Get-Content $_.FullName } | Select-String "applied=|stopping|fatal|failed" | Select-Object -Last 4 | ForEach-Object { $_.Line }
 Write-Output "--- verify"
 $env:DATABASE_URL = $baseUrl
 bin\verify.exe

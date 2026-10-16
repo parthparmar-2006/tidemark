@@ -42,6 +42,10 @@ func DatabaseURL() string {
 	return String("DATABASE_URL", "postgres://tidemark:tidemark@localhost:5433/tidemark?sslmode=disable")
 }
 
+func ProjectionDatabaseURL() string {
+	return String("PROJECTION_DATABASE_URL", "postgres://tidemark:tidemark@localhost:5433/projections?sslmode=disable")
+}
+
 func KafkaBrokers() string {
 	return String("KAFKA_BROKERS", "localhost:9092")
 }
