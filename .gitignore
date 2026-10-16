@@ -1,0 +1,24 @@
+# Private engineering notes (separate repo: tidemark-notes)
+notes/
+
+# Build output
+bin/
+dist/
+target/
+*.exe
+*.test
+*.out
+
+# Benchmark/run output
+results/raw/
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
