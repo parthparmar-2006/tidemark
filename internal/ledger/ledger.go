@@ -59,14 +59,11 @@ func (l *Ledger) Deposit(ctx context.Context, accountID int64, amount int64) (Ev
 	}
 	defer tx.Rollback(ctx)
 
-	var balance, version int64
-	err = tx.QueryRow(ctx, depositSQL, accountID, amount).Scan(&balance, &version)
+	event, err := WriteDeposit(ctx, tx, accountID, amount)
 	if err != nil {
 		return Event{}, err
 	}
-
-	event := newEvent(accountID, version, "deposited", amount, balance)
-	err = recordAndCommit(ctx, tx, event)
+	err = tx.Commit(ctx)
 	if err != nil {
 		return Event{}, err
 	}
@@ -80,8 +77,35 @@ func (l *Ledger) Withdraw(ctx context.Context, accountID int64, amount int64) (E
 	}
 	defer tx.Rollback(ctx)
 
+	event, err := WriteWithdraw(ctx, tx, accountID, amount)
+	if err != nil {
+		return Event{}, err
+	}
+	err = tx.Commit(ctx)
+	if err != nil {
+		return Event{}, err
+	}
+	return event, nil
+}
+
+func WriteDeposit(ctx context.Context, tx pgx.Tx, accountID int64, amount int64) (Event, error) {
 	var balance, version int64
-	err = tx.QueryRow(ctx, withdrawSQL, accountID, amount).Scan(&balance, &version)
+	err := tx.QueryRow(ctx, depositSQL, accountID, amount).Scan(&balance, &version)
+	if err != nil {
+		return Event{}, err
+	}
+
+	event := newEvent(accountID, version, "deposited", amount, balance)
+	err = recordEvent(ctx, tx, event)
+	if err != nil {
+		return Event{}, err
+	}
+	return event, nil
+}
+
+func WriteWithdraw(ctx context.Context, tx pgx.Tx, accountID int64, amount int64) (Event, error) {
+	var balance, version int64
+	err := tx.QueryRow(ctx, withdrawSQL, accountID, amount).Scan(&balance, &version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, ErrInsufficientFunds
 	}
@@ -90,7 +114,7 @@ func (l *Ledger) Withdraw(ctx context.Context, accountID int64, amount int64) (E
 	}
 
 	event := newEvent(accountID, version, "withdrawn", -amount, balance)
-	err = recordAndCommit(ctx, tx, event)
+	err = recordEvent(ctx, tx, event)
 	if err != nil {
 		return Event{}, err
 	}
@@ -108,7 +132,7 @@ func newEvent(accountID int64, version int64, eventType string, amount int64, ba
 	}
 }
 
-func recordAndCommit(ctx context.Context, tx pgx.Tx, event Event) error {
+func recordEvent(ctx context.Context, tx pgx.Tx, event Event) error {
 	_, err := tx.Exec(ctx, insertEntrySQL, event.AccountID, event.Version, event.Amount, event.BalanceAfter)
 	if err != nil {
 		return err
@@ -120,9 +144,5 @@ func recordAndCommit(ctx context.Context, tx pgx.Tx, event Event) error {
 	}
 
 	_, err = tx.Exec(ctx, insertOutboxSQL, event.AccountID, event.Type, string(payload))
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return err
 }

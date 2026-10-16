@@ -21,7 +21,7 @@ type result struct {
 }
 
 func main() {
-	baseURL := config.String("SERVICE_URL", "http://localhost:8080")
+	baseURL := config.String("SERVICE_URL", "http://localhost:18080")
 	workers := config.Int("WORKERS", 16)
 	accounts := config.Int("ACCOUNTS", 1000)
 	duration := config.Duration("DURATION", 30*time.Second)
@@ -86,14 +86,18 @@ func printSummary(all []result, duration time.Duration) {
 	var ok, conflicts, failures int
 	var latencies []time.Duration
 	for _, res := range all {
-		if res.failed || res.status >= 500 {
+		if res.failed {
 			failures++
 			continue
 		}
-		if res.status == http.StatusConflict {
-			conflicts++
-		} else {
+		switch res.status {
+		case http.StatusOK:
 			ok++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			failures++
+			continue
 		}
 		latencies = append(latencies, res.latency)
 	}

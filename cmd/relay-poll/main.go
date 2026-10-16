@@ -44,6 +44,7 @@ func main() {
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
 		kgo.DefaultProduceTopic(config.Topic()),
+		kgo.AllowIdempotentProduceCancellation(),
 	)
 	if err != nil {
 		log.Fatalf("create kafka client: %v", err)
@@ -53,10 +54,11 @@ func main() {
 	batchSize := config.Int("BATCH_SIZE", 500)
 	pollInterval := config.Duration("POLL_INTERVAL", 50*time.Millisecond)
 	retryDelay := config.Duration("RETRY_DELAY", time.Second)
+	produceTimeout := config.Duration("PRODUCE_TIMEOUT", 5*time.Second)
 
-	log.Printf("polling relay started: batch=%d poll=%s", batchSize, pollInterval)
+	log.Printf("polling relay started: batch=%d poll=%s produce_timeout=%s", batchSize, pollInterval, produceTimeout)
 	for ctx.Err() == nil {
-		count, err := relayBatch(ctx, pool, client, batchSize)
+		count, err := relayBatch(ctx, pool, client, batchSize, produceTimeout)
 		if err != nil {
 			log.Printf("relay batch failed: %v", err)
 			sleep(ctx, retryDelay)
@@ -69,7 +71,7 @@ func main() {
 	log.Printf("polling relay stopped")
 }
 
-func relayBatch(ctx context.Context, pool *pgxpool.Pool, client *kgo.Client, batchSize int) (int, error) {
+func relayBatch(ctx context.Context, pool *pgxpool.Pool, client *kgo.Client, batchSize int, produceTimeout time.Duration) (int, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return 0, err
@@ -109,7 +111,9 @@ func relayBatch(ctx context.Context, pool *pgxpool.Pool, client *kgo.Client, bat
 		ids = append(ids, row.id)
 	}
 
-	results := client.ProduceSync(ctx, records...)
+	produceCtx, cancel := context.WithTimeout(ctx, produceTimeout)
+	defer cancel()
+	results := client.ProduceSync(produceCtx, records...)
 	err = results.FirstErr()
 	if err != nil {
 		return 0, err

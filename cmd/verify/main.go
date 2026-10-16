@@ -81,17 +81,25 @@ func main() {
 		log.Fatalf("consume: %v", err)
 	}
 
+	countLost(entries, progress, &r)
+
+	printReport(r)
+	if r.hasViolations() {
+		os.Exit(1)
+	}
+}
+
+func countLost(entries map[entryKey]entry, progress map[int64]*accountProgress, r *report) {
 	for key := range entries {
 		account := progress[key.accountID]
 		if account == nil || !account.seen[key.version] {
 			r.lost++
 		}
 	}
+}
 
-	printReport(r)
-	if r.lost > 0 || r.phantoms > 0 || r.mismatched > 0 || r.outOfOrder > 0 {
-		os.Exit(1)
-	}
+func (r report) hasViolations() bool {
+	return r.lost > 0 || r.phantoms > 0 || r.mismatched > 0 || r.outOfOrder > 0
 }
 
 func loadEntries(ctx context.Context, pool *pgxpool.Pool) (map[entryKey]entry, error) {

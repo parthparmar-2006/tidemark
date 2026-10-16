@@ -37,7 +37,7 @@ func main() {
 	mux.HandleFunc("POST /accounts/{id}/deposit", s.handleDeposit)
 	mux.HandleFunc("POST /accounts/{id}/withdraw", s.handleWithdraw)
 
-	addr := config.String("HTTP_ADDR", ":8080")
+	addr := config.String("HTTP_ADDR", ":18080")
 	log.Printf("service listening on %s", addr)
 	err = http.ListenAndServe(addr, mux)
 	if err != nil {
